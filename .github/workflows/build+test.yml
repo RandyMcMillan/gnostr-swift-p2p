@@ -1,24 +1,82 @@
-# This workflow will build a Swift project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-swift
+# CI pipeline: build (debug + release), test, and smoke-run
+# https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-swift
 
-name: Build & Test (macos & linux)
+name: CI - Build, Test & Run
 
 on:
   push:
     paths-ignore:
       - 'README.md'
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
 
 jobs:
-  build-macos:
 
+  # ─── macOS: primary job (build debug + release, test, run) ──────────────────
+  build-test-run-macos:
+    name: macOS - Build, Test & Run
     runs-on: macos-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - name: Build
-      run: swift build -v
-    - name: Run tests
-      run: swift test -v
+      - uses: actions/checkout@v4
+
+      - name: Cache Swift package dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Build (debug)
+        run: swift build -v
+
+      - name: Build (release)
+        run: swift build -c release -v
+
+      - name: Run tests
+        run: swift test -v
+
+      # Smoke-run the server binary for up to 10 s.
+      # A timeout (exit 124) means the server started cleanly and is listening —
+      # that is the expected outcome for a long-running P2P process.
+      - name: Run smoke test
+        env:
+          APP_KEY: ci-smoke-test-key-0000000000000000
+        run: |
+          timeout 10 swift run App; exit_code=$?
+          if [ "${exit_code}" -eq 124 ]; then
+            echo "PASS: app ran for 10 s and was stopped (server behaviour as expected)"
+          elif [ "${exit_code}" -eq 0 ]; then
+            echo "PASS: app exited cleanly"
+          else
+            echo "FAIL: app exited with code ${exit_code}"
+            exit "${exit_code}"
+          fi
+
+  # ─── Linux: informational job (build + test only; run requires macOS) ───────
+  build-test-linux:
+    name: Linux - Build & Test
+    runs-on: ubuntu-latest
+    continue-on-error: true          # macOS-only platform declaration may fail
+    container:
+      image: swift:6.0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Swift package dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: Linux-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            Linux-spm-
+
+      - name: Build (debug)
+        run: swift build -v
+
+      - name: Build (release)
+        run: swift build -c release -v
+
+      - name: Run tests
+        run: swift test -v
